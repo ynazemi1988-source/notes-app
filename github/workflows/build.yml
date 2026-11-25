@@ -1,0 +1,267 @@
+name: Build APK
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create Android project
+        run: |
+          cat > settings.gradle <<'EOF'
+          pluginManagement {
+              repositories { google(); mavenCentral(); gradlePluginPortal() }
+          }
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories { google(); mavenCentral() }
+          }
+          rootProject.name = "Notes"
+          include ':app'
+          EOF
+          cat > build.gradle <<'EOF'
+          plugins {
+              id 'com.android.application' version '8.5.2' apply false
+          }
+          EOF
+          cat > gradle.properties <<'EOF'
+          org.gradle.jvmargs=-Xmx2g -Dfile.encoding=UTF-8
+          android.useAndroidX=true
+          EOF
+          mkdir -p app
+          cat > app/build.gradle <<'EOF'
+          plugins {
+              id 'com.android.application'
+          }
+
+          android {
+              namespace 'com.notes.app'
+              compileSdk 34
+
+              defaultConfig {
+                  applicationId 'com.notes.app'
+                  minSdk 24
+                  targetSdk 34
+                  versionCode 1
+                  versionName '1.0'
+              }
+              buildTypes {
+                  release { minifyEnabled false }
+              }
+              compileOptions {
+                  sourceCompatibility JavaVersion.VERSION_17
+                  targetCompatibility JavaVersion.VERSION_17
+              }
+          }
+
+          dependencies {
+              implementation 'androidx.webkit:webkit:1.11.0'
+          }
+          EOF
+          mkdir -p app/src/main
+          cat > app/src/main/AndroidManifest.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+              <uses-permission android:name="android.permission.RECORD_AUDIO" />
+              <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+
+              <application
+                  android:label="یادداشت"
+                  android:icon="@drawable/ic_launcher"
+                  android:allowBackup="true"
+                  android:supportsRtl="true"
+                  android:theme="@android:style/Theme.Material.Light.NoActionBar">
+
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true"
+                      android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboard|keyboardHidden|uiMode"
+                      android:windowSoftInputMode="adjustResize">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          EOF
+          mkdir -p app/src/main/res/drawable
+          cat > app/src/main/res/drawable/ic_launcher.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <vector xmlns:android="http://schemas.android.com/apk/res/android"
+              android:width="108dp"
+              android:height="108dp"
+              android:viewportWidth="108"
+              android:viewportHeight="108">
+              <path android:fillColor="#4F7CFF" android:pathData="M0,0h108v108h-108z" />
+              <path android:fillColor="#FFFFFF" android:pathData="M28,32h52v9h-52z M28,50h52v9h-52z M28,68h34v9h-34z" />
+          </vector>
+          EOF
+          mkdir -p app/src/main/java/com/notes/app
+          cat > app/src/main/java/com/notes/app/MainActivity.java <<'EOF'
+          package com.notes.app;
+
+          import android.Manifest;
+          import android.annotation.SuppressLint;
+          import android.app.Activity;
+          import android.content.Context;
+          import android.content.pm.PackageManager;
+          import android.os.Bundle;
+          import android.print.PrintAttributes;
+          import android.print.PrintDocumentAdapter;
+          import android.print.PrintManager;
+          import android.webkit.JavascriptInterface;
+          import android.webkit.PermissionRequest;
+          import android.webkit.WebChromeClient;
+          import android.webkit.WebResourceRequest;
+          import android.webkit.WebResourceResponse;
+          import android.webkit.WebSettings;
+          import android.webkit.WebView;
+          import android.webkit.WebViewClient;
+
+          import androidx.webkit.WebViewAssetLoader;
+
+          public class MainActivity extends Activity {
+
+              private static final String HOST = "appassets.androidplatform.net";
+              private static final String START = "https://" + HOST + "/assets/note.html";
+              private static final int REQ_MIC = 1;
+
+              private WebView web;
+              private WebView printView;
+              private PermissionRequest pending;
+
+              @SuppressLint({"SetJavaScriptEnabled", "JavascriptInterface"})
+              @Override
+              protected void onCreate(Bundle savedInstanceState) {
+                  super.onCreate(savedInstanceState);
+
+                  final WebViewAssetLoader loader = new WebViewAssetLoader.Builder()
+                          .addPathHandler("/assets/", new WebViewAssetLoader.AssetsPathHandler(this))
+                          .build();
+
+                  web = new WebView(this);
+                  setContentView(web);
+
+                  WebSettings s = web.getSettings();
+                  s.setJavaScriptEnabled(true);
+                  s.setDomStorageEnabled(true);
+                  s.setMediaPlaybackRequiresUserGesture(false);
+                  s.setAllowFileAccess(false);
+                  s.setAllowContentAccess(false);
+
+                  web.setWebViewClient(new WebViewClient() {
+                      @Override
+                      public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
+                          return loader.shouldInterceptRequest(request.getUrl());
+                      }
+                  });
+
+                  web.setWebChromeClient(new WebChromeClient() {
+                      @Override
+                      public void onPermissionRequest(final PermissionRequest request) {
+                          runOnUiThread(new Runnable() {
+                              @Override
+                              public void run() {
+                                  handlePermission(request);
+                              }
+                          });
+                      }
+                  });
+
+                  web.addJavascriptInterface(new Bridge(), "AndroidBridge");
+
+                  if (savedInstanceState == null) {
+                      web.loadUrl(START);
+                  }
+              }
+
+              private void handlePermission(PermissionRequest request) {
+                  if (!HOST.equals(request.getOrigin().getHost())) {
+                      request.deny();
+                      return;
+                  }
+                  boolean wantsAudio = false;
+                  for (String r : request.getResources()) {
+                      if (PermissionRequest.RESOURCE_AUDIO_CAPTURE.equals(r)) wantsAudio = true;
+                  }
+                  if (!wantsAudio) {
+                      request.deny();
+                      return;
+                  }
+                  if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+                      request.grant(new String[]{PermissionRequest.RESOURCE_AUDIO_CAPTURE});
+                  } else {
+                      pending = request;
+                      requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO}, REQ_MIC);
+                  }
+              }
+
+              @Override
+              public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+                  super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+                  if (requestCode == REQ_MIC && pending != null) {
+                      if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                          pending.grant(new String[]{PermissionRequest.RESOURCE_AUDIO_CAPTURE});
+                      } else {
+                          pending.deny();
+                      }
+                      pending = null;
+                  }
+              }
+
+              /** Called from the page: AndroidBridge.printHtml(html) -> system print dialog (Save as PDF). */
+              private class Bridge {
+                  @JavascriptInterface
+                  public void printHtml(final String html) {
+                      runOnUiThread(new Runnable() {
+                          @Override
+                          public void run() {
+                              printView = new WebView(MainActivity.this);
+                              printView.setWebViewClient(new WebViewClient() {
+                                  @Override
+                                  public void onPageFinished(WebView view, String url) {
+                                      PrintManager pm = (PrintManager) getSystemService(Context.PRINT_SERVICE);
+                                      PrintDocumentAdapter adapter = view.createPrintDocumentAdapter("Notes");
+                                      pm.print("Notes", adapter, new PrintAttributes.Builder().build());
+                                  }
+                              });
+                              printView.loadDataWithBaseURL("https://" + HOST + "/", html, "text/html", "UTF-8", null);
+                          }
+                      });
+                  }
+              }
+          }
+          EOF
+          mkdir -p app/src/main/assets
+          cp note.html app/src/main/assets/note.html
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      - name: Accept SDK licenses
+        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+
+      - name: Build APK
+        run: gradle assembleDebug --no-daemon
+
+      - name: Publish APK
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: Notes APK ${{ github.run_number }}
+          files: app/build/outputs/apk/debug/app-debug.apk
